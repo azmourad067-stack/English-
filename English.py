@@ -1,8 +1,7 @@
 import streamlit as st
-import anthropic
-import os
-from datetime import datetime
+import requests
 import json
+from datetime import datetime
 
 # Configuration de la page
 st.set_page_config(
@@ -21,18 +20,36 @@ if "conversation_count" not in st.session_state:
 
 # Titre et description
 st.title("🗣️ English Conversation Practice")
-st.markdown("### Pratiquez votre anglais avec une conversation naturelle")
+st.markdown("### Pratiquez votre anglais avec une conversation naturelle - 100% GRATUIT")
 
 # Sidebar pour les paramètres
 with st.sidebar:
     st.header("⚙️ Paramètres")
     
-    # Clé API Anthropic
-    api_key = st.text_input(
-        "Clé API Anthropic",
-        type="password",
-        help="Entrez votre clé API Anthropic (commençant par sk-ant-)"
+    # Choix du service gratuit
+    service = st.radio(
+        "Service d'IA (gratuit)",
+        ["Groq (Recommandé)", "Hugging Face"],
+        help="Groq est plus rapide et performant"
     )
+    
+    # Clé API selon le service
+    if service == "Groq (Recommandé)":
+        st.info("🎉 Groq offre une API gratuite avec 14,400 requêtes/jour !")
+        api_key = st.text_input(
+            "Clé API Groq (gratuite)",
+            type="password",
+            help="Obtenez votre clé sur console.groq.com"
+        )
+        st.markdown("[📝 Obtenir une clé Groq gratuite](https://console.groq.com)")
+    else:
+        st.info("🤗 Hugging Face offre une API gratuite !")
+        api_key = st.text_input(
+            "Clé API Hugging Face (gratuite)",
+            type="password",
+            help="Obtenez votre clé sur huggingface.co"
+        )
+        st.markdown("[📝 Obtenir une clé HF gratuite](https://huggingface.co/settings/tokens)")
     
     # Niveau d'anglais
     level = st.selectbox(
@@ -62,18 +79,44 @@ with st.sidebar:
 
 # Vérification de la clé API
 if not api_key:
-    st.warning("⚠️ Veuillez entrer votre clé API Anthropic dans la barre latérale pour commencer.")
-    st.info("""
-    **Comment obtenir votre clé API:**
-    1. Allez sur [console.anthropic.com](https://console.anthropic.com)
-    2. Créez un compte ou connectez-vous
-    3. Générez une clé API dans les paramètres
-    4. Copiez-la et collez-la dans le champ à gauche
-    """)
+    st.warning("⚠️ Veuillez entrer votre clé API gratuite dans la barre latérale pour commencer.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.success("### 🚀 Option 1: Groq (Recommandé)")
+        st.markdown("""
+        **Avantages:**
+        - ✅ Très rapide
+        - ✅ 14,400 requêtes/jour GRATUITES
+        - ✅ Meilleure qualité de réponse
+        - ✅ Facile à configurer
+        
+        **Comment faire:**
+        1. Allez sur [console.groq.com](https://console.groq.com)
+        2. Créez un compte gratuit
+        3. Allez dans "API Keys"
+        4. Créez une nouvelle clé
+        5. Copiez-la dans la barre latérale
+        """)
+    
+    with col2:
+        st.info("### 🤗 Option 2: Hugging Face")
+        st.markdown("""
+        **Avantages:**
+        - ✅ Totalement gratuit
+        - ✅ Pas de limite stricte
+        - ✅ Beaucoup de modèles disponibles
+        
+        **Comment faire:**
+        1. Allez sur [huggingface.co](https://huggingface.co)
+        2. Créez un compte gratuit
+        3. Allez dans Settings > Access Tokens
+        4. Créez un nouveau token
+        5. Copiez-le dans la barre latérale
+        """)
+    
     st.stop()
-
-# Initialisation du client Anthropic
-client = anthropic.Anthropic(api_key=api_key)
 
 # Système de prompt pour l'IA
 def get_system_prompt(level, topic):
@@ -102,6 +145,63 @@ Your role:
 7. Show interest in what they say
 
 Remember: You're a conversation partner, not a strict teacher. Make it fun and natural!"""
+
+# Fonction pour appeler l'API Groq
+def call_groq_api(messages, api_key, system_prompt):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # Préparer les messages avec le system prompt
+    api_messages = [{"role": "system", "content": system_prompt}]
+    api_messages.extend(messages)
+    
+    data = {
+        "model": "llama-3.3-70b-versatile",  # Modèle gratuit et performant
+        "messages": api_messages,
+        "temperature": 0.7,
+        "max_tokens": 1000
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+
+# Fonction pour appeler l'API Hugging Face
+def call_huggingface_api(messages, api_key, system_prompt):
+    url = "https://api-inference.huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # Construire le prompt complet
+    full_prompt = system_prompt + "\n\n"
+    for msg in messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        full_prompt += f"{role}: {msg['content']}\n"
+    full_prompt += "Assistant:"
+    
+    data = {
+        "inputs": full_prompt,
+        "parameters": {
+            "max_new_tokens": 500,
+            "temperature": 0.7,
+            "return_full_text": False
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    response.raise_for_status()
+    result = response.json()
+    
+    if isinstance(result, list) and len(result) > 0:
+        return result[0].get("generated_text", "")
+    return ""
 
 # Fonction pour analyser les corrections
 def extract_corrections(response_text):
@@ -137,18 +237,17 @@ if user_input:
         for msg in st.session_state.messages
     ]
     
-    # Obtenir la réponse de Claude
+    # Obtenir la réponse de l'IA
     with st.chat_message("assistant"):
         with st.spinner("💭 En train de réfléchir..."):
             try:
-                response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=1000,
-                    system=get_system_prompt(level, selected_topic),
-                    messages=api_messages
-                )
+                system_prompt = get_system_prompt(level, selected_topic)
                 
-                assistant_message = response.content[0].text
+                if service == "Groq (Recommandé)":
+                    assistant_message = call_groq_api(api_messages, api_key, system_prompt)
+                else:
+                    assistant_message = call_huggingface_api(api_messages, api_key, system_prompt)
+                
                 st.write(assistant_message)
                 
                 # Sauvegarder la réponse
@@ -166,6 +265,13 @@ if user_input:
                         "correction": correction
                     })
                 
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401:
+                    st.error("❌ Clé API invalide. Vérifiez votre clé dans la barre latérale.")
+                elif e.response.status_code == 429:
+                    st.error("⏳ Limite de taux atteinte. Attendez quelques secondes et réessayez.")
+                else:
+                    st.error(f"❌ Erreur API: {str(e)}")
             except Exception as e:
                 st.error(f"❌ Erreur: {str(e)}")
 
@@ -194,13 +300,14 @@ with st.expander("ℹ️ Comment utiliser cette application"):
     - ✅ Questions pour maintenir la conversation
     - ✅ Adaptation à votre niveau
     - ✅ Sujets variés du quotidien
+    - ✅ 100% GRATUIT (Groq ou Hugging Face)
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "💡 Astuce: Pour obtenir le meilleur résultat, essayez d'écrire 2-3 phrases par message"
+    "💡 Application 100% gratuite - Propulsée par Groq/Hugging Face 🚀"
     "</div>",
     unsafe_allow_html=True
 )
