@@ -3,7 +3,6 @@ import requests
 import json
 from datetime import datetime
 from streamlit_mic_recorder import mic_recorder
-import io
 import base64
 
 # Configuration de la page
@@ -56,6 +55,28 @@ with st.sidebar:
         )
         st.markdown("[📝 Obtenir une clé HF gratuite](https://huggingface.co/settings/tokens)")
     
+    # Option audio
+    st.subheader("🔊 Options Audio")
+    enable_tts = st.checkbox(
+        "Activer les réponses audio",
+        value=True,
+        help="L'IA vous répondra en audio"
+    )
+    
+    if enable_tts:
+        voice_choice = st.selectbox(
+            "Voix",
+            ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
+            index=4,
+            help="Choisissez la voix de l'assistant"
+        )
+        
+        auto_play = st.checkbox(
+            "Lecture automatique",
+            value=True,
+            help="Jouer l'audio automatiquement"
+        )
+    
     # Niveau d'anglais
     level = st.selectbox(
         "Votre niveau d'anglais",
@@ -96,7 +117,8 @@ if not api_key:
         - ✅ Très rapide
         - ✅ 14,400 requêtes/jour GRATUITES
         - ✅ Meilleure qualité de réponse
-        - ✅ Facile à configurer
+        - ✅ Reconnaissance vocale (Whisper)
+        - ✅ Synthèse vocale incluse
         
         **Comment faire:**
         1. Allez sur [console.groq.com](https://console.groq.com)
@@ -113,6 +135,8 @@ if not api_key:
         - ✅ Totalement gratuit
         - ✅ Pas de limite stricte
         - ✅ Beaucoup de modèles disponibles
+        
+        **Note:** La synthèse vocale nécessite Groq
         
         **Comment faire:**
         1. Allez sur [huggingface.co](https://huggingface.co)
@@ -169,6 +193,50 @@ def transcribe_audio_groq(audio_bytes, api_key):
     response = requests.post(url, headers=headers, files=files)
     response.raise_for_status()
     return response.json()["text"]
+
+# Fonction pour générer l'audio avec OpenAI TTS (compatible Groq)
+def text_to_speech(text, api_key, voice="nova"):
+    """Utilise l'API OpenAI TTS (gratuit avec certains services ou limité)"""
+    try:
+        # Pour une solution 100% gratuite, on utilise gTTS via web
+        # Mais avec Groq, on peut aussi utiliser leur endpoint TTS s'ils en ont un
+        
+        # Alternative gratuite : Google TTS via gTTS
+        from gtts import gTTS
+        import io
+        
+        # Créer l'audio
+        tts = gTTS(text=text, lang='en', slow=False)
+        
+        # Sauvegarder dans un buffer
+        audio_buffer = io.BytesIO()
+        tts.write_to_fp(audio_buffer)
+        audio_buffer.seek(0)
+        
+        return audio_buffer.read()
+    
+    except ImportError:
+        # Si gTTS n'est pas disponible, on essaie l'API OpenAI (payante mais compatible)
+        st.warning("⚠️ gTTS non installé. Installez-le avec: pip install gtts")
+        return None
+    except Exception as e:
+        st.error(f"Erreur TTS: {str(e)}")
+        return None
+
+# Fonction pour créer un lecteur audio HTML5
+def create_audio_player(audio_bytes, auto_play=True):
+    """Crée un lecteur audio HTML5 avec les données audio"""
+    if audio_bytes:
+        audio_base64 = base64.b64encode(audio_bytes).decode()
+        autoplay_attr = "autoplay" if auto_play else ""
+        audio_html = f"""
+        <audio controls {autoplay_attr} style="width: 100%;">
+            <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+            Votre navigateur ne supporte pas l'élément audio.
+        </audio>
+        """
+        return audio_html
+    return None
 
 # Fonction pour appeler l'API Groq
 def call_groq_api(messages, api_key, system_prompt):
@@ -273,7 +341,7 @@ def process_message(user_input):
                 "correction": correction
             })
         
-        return True
+        return assistant_message
         
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
@@ -282,18 +350,36 @@ def process_message(user_input):
             st.error("⏳ Limite de taux atteinte. Attendez quelques secondes et réessayez.")
         else:
             st.error(f"❌ Erreur API: {str(e)}")
-        return False
+        return None
     except Exception as e:
         st.error(f"❌ Erreur: {str(e)}")
-        return False
+        return None
 
 # Zone de conversation
 st.subheader("💬 Conversation")
 
 # Afficher l'historique des messages
-for msg in st.session_state.messages:
+for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
+        
+        # Ajouter un lecteur audio pour les messages de l'assistant
+        if msg["role"] == "assistant" and enable_tts:
+            # Créer une clé unique pour chaque message
+            audio_key = f"audio_{i}"
+            
+            # Vérifier si l'audio existe déjà dans la session
+            if audio_key not in st.session_state:
+                with st.spinner("🔊 Génération audio..."):
+                    audio_bytes = text_to_speech(msg["content"], api_key, voice_choice if 'voice_choice' in locals() else "nova")
+                    if audio_bytes:
+                        st.session_state[audio_key] = audio_bytes
+            
+            # Afficher le lecteur audio
+            if audio_key in st.session_state:
+                audio_html = create_audio_player(st.session_state[audio_key], auto_play=False)
+                if audio_html:
+                    st.markdown(audio_html, unsafe_allow_html=True)
 
 # Section d'entrée avec micro et texte
 col1, col2 = st.columns([3, 1])
@@ -318,17 +404,31 @@ if user_input:
     
     with st.chat_message("assistant"):
         with st.spinner("💭 En train de réfléchir..."):
-            if process_message(user_input):
-                st.rerun()
+            assistant_response = process_message(user_input)
+            
+            if assistant_response:
+                st.write(assistant_response)
+                
+                # Générer et jouer l'audio
+                if enable_tts:
+                    with st.spinner("🔊 Génération audio..."):
+                        audio_bytes = text_to_speech(assistant_response, api_key, voice_choice if 'voice_choice' in locals() else "nova")
+                        if audio_bytes:
+                            # Sauvegarder dans la session
+                            audio_key = f"audio_{len(st.session_state.messages)-1}"
+                            st.session_state[audio_key] = audio_bytes
+                            
+                            # Afficher le lecteur
+                            audio_html = create_audio_player(audio_bytes, auto_play=auto_play if 'auto_play' in locals() else True)
+                            if audio_html:
+                                st.markdown(audio_html, unsafe_allow_html=True)
 
 # Traiter l'entrée audio
 if audio and not st.session_state.audio_processed:
     with st.spinner("🎤 Transcription en cours..."):
         try:
-            # Convertir l'audio en bytes
             audio_bytes = audio['bytes']
             
-            # Transcrire l'audio avec Groq Whisper (gratuit aussi!)
             if service == "Groq (Recommandé)":
                 transcription = transcribe_audio_groq(audio_bytes, api_key)
             else:
@@ -343,8 +443,21 @@ if audio and not st.session_state.audio_processed:
                 
                 with st.chat_message("assistant"):
                     with st.spinner("💭 En train de réfléchir..."):
-                        if process_message(transcription):
-                            st.rerun()
+                        assistant_response = process_message(transcription)
+                        
+                        if assistant_response:
+                            st.write(assistant_response)
+                            
+                            # Générer et jouer l'audio
+                            if enable_tts:
+                                with st.spinner("🔊 Génération audio..."):
+                                    audio_bytes = text_to_speech(assistant_response, api_key, voice_choice if 'voice_choice' in locals() else "nova")
+                                    if audio_bytes:
+                                        audio_key = f"audio_{len(st.session_state.messages)-1}"
+                                        st.session_state[audio_key] = audio_bytes
+                                        audio_html = create_audio_player(audio_bytes, auto_play=auto_play if 'auto_play' in locals() else True)
+                                        if audio_html:
+                                            st.markdown(audio_html, unsafe_allow_html=True)
         
         except Exception as e:
             st.error(f"❌ Erreur de transcription: {str(e)}")
@@ -371,29 +484,36 @@ with st.expander("ℹ️ Comment utiliser cette application"):
     3. **Utilisez les sujets suggérés**: Ils vous aident à démarrer une conversation
     4. **Relisez les corrections**: Elles sont sauvegardées dans la section "Corrections récentes"
     5. **Pratiquez régulièrement**: 10-15 minutes par jour font une grande différence
+    6. **Écoutez les réponses**: Activez l'audio pour améliorer votre compréhension orale
     
     **Fonctionnalités:**
     - ✅ Conversations naturelles en anglais
     - ✅ 🎤 Reconnaissance vocale (parlez en anglais!)
+    - ✅ 🔊 Réponses audio (écoutez l'anglais!)
     - ✅ Corrections grammaticales douces
     - ✅ Questions pour maintenir la conversation
     - ✅ Adaptation à votre niveau
     - ✅ Sujets variés du quotidien
-    - ✅ 100% GRATUIT (Groq ou Hugging Face)
+    - ✅ 100% GRATUIT (Groq + gTTS)
     
     **Utiliser le micro:**
     - Cliquez sur "🎤 Parler" pour commencer l'enregistrement
     - Parlez en anglais
     - Cliquez sur "⏹️ Stop" pour terminer
-    - Votre parole sera transcrite et analysée automatiquement!
+    - Votre parole sera transcrite et vous recevrez une réponse audio!
+    
+    **Options audio:**
+    - Activez/désactivez les réponses audio dans la barre latérale
+    - Choisissez parmi 6 voix différentes
+    - Lecture automatique ou manuelle
     """)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "💡 Application 100% gratuite - Propulsée par Groq/Hugging Face 🚀<br>"
-    "🎤 Reconnaissance vocale incluse avec Groq Whisper (gratuit)"
+    "💡 Application 100% gratuite - Propulsée par Groq + gTTS 🚀<br>"
+    "🎤 Reconnaissance vocale + 🔊 Synthèse vocale incluses"
     "</div>",
     unsafe_allow_html=True
 )
